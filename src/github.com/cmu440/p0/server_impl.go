@@ -10,12 +10,12 @@ import (
 )
 
 type multiEchoServer struct {
-	// TODO: implement this!
-    ln net.Listener
-	clients       []*multiEchoClient
-	addClientChan chan net.Conn
-	readChan      chan []byte
-	closeChan     chan bool
+	ln               net.Listener
+	clients          map[string]*multiEchoClient
+	addClientChan    chan *multiEchoClient
+	removeClientChan chan *multiEchoClient
+	readChan         chan []byte
+	closeChan        chan bool
 }
 
 type multiEchoClient struct {
@@ -24,41 +24,37 @@ type multiEchoClient struct {
 	closeChan chan bool
 }
 
-
 // New creates and returns (but does not start) a new MultiEchoServer.
 func New() MultiEchoServer {
-	// TODO: implement this!
 	mes := new(multiEchoServer)
-	mes.addClientChan = make(chan net.Conn)
+	mes.clients = make(map[string]*multiEchoClient)
+	mes.addClientChan = make(chan *multiEchoClient)
+	mes.removeClientChan = make(chan *multiEchoClient)
 	mes.readChan = make(chan []byte)
 	mes.closeChan = make(chan bool)
 	return mes
 }
 
 func (mes *multiEchoServer) Start(port int) error {
-	// TODO: implement this!
 	fmt.Println("Start listening.")
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
 		return err
 	}
-    mes.ln = ln
+	mes.ln = ln
 	go mes.serverRoutine()
 	return err
 }
 
 func (mes *multiEchoServer) Close() {
-	// TODO: implement this!
 	mes.closeChan <- true
-    mes.ln.Close()
+	mes.ln.Close()
 }
 
 func (mes *multiEchoServer) Count() int {
-	// TODO: implement this!
 	return len(mes.clients)
 }
 
-// TODO: add additional methods/functions below!
 func (mes *multiEchoServer) serverRoutine() {
 	go mes.handleAccept(mes.ln)
 
@@ -66,31 +62,36 @@ func (mes *multiEchoServer) serverRoutine() {
 		select {
 		case line := <-mes.readChan:
 			for _, client := range mes.clients {
-				client.writeChan <- line
+				if len(client.writeChan) < 100 {
+					client.writeChan <- line
+				}
 			}
-		case conn := <-mes.addClientChan:
-			client := new(multiEchoClient)
-			client.conn = conn
-            client.writeChan = make(chan []byte, 100)
-            client.closeChan = make(chan bool)
-			mes.clients = append(mes.clients, client)
-			go client.clientRoutine()
+		case client := <-mes.addClientChan:
+			mes.clients[client.conn.RemoteAddr().String()] = client
+			go client.clientRoutine(mes)
 			go mes.handleRead(client)
+		case client := <-mes.removeClientChan:
+			client.closeChan <- true
+			delete(mes.clients, client.conn.RemoteAddr().String())
 		case <-mes.closeChan:
 			for _, client := range mes.clients {
 				client.closeChan <- true
+				delete(mes.clients, client.conn.RemoteAddr().String())
 			}
 			return
 		}
-
 	}
 }
 
-func (client *multiEchoClient) clientRoutine() {
+func (client *multiEchoClient) clientRoutine(mes *multiEchoServer) {
 	for {
 		select {
 		case line := <-client.writeChan:
-			client.conn.Write(line)
+			_, err := client.conn.Write(line)
+			if err != nil {
+				mes.removeClientChan <- client
+				return
+			}
 		case <-client.closeChan:
 			client.conn.Close()
 			return
@@ -102,9 +103,13 @@ func (mes *multiEchoServer) handleAccept(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			break
+			return
 		}
-		mes.addClientChan <- conn
+		client := new(multiEchoClient)
+		client.conn = conn
+		client.writeChan = make(chan []byte, 100)
+		client.closeChan = make(chan bool)
+		mes.addClientChan <- client
 	}
 }
 
@@ -114,10 +119,10 @@ func (mes *multiEchoServer) handleRead(client *multiEchoClient) {
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
-
+			mes.removeClientChan <- client
+			return
 		}
 
 		mes.readChan <- line
 	}
 }
-
