@@ -16,6 +16,7 @@ type multiEchoServer struct {
 	removeClientChan chan *multiEchoClient
 	readChan         chan []byte
 	closeChan        chan bool
+    countRequestChan chan chan int
 }
 
 type multiEchoClient struct {
@@ -32,6 +33,7 @@ func New() MultiEchoServer {
 	mes.removeClientChan = make(chan *multiEchoClient)
 	mes.readChan = make(chan []byte)
 	mes.closeChan = make(chan bool)
+    mes.countRequestChan = make(chan chan int)
 	return mes
 }
 
@@ -52,7 +54,9 @@ func (mes *multiEchoServer) Close() {
 }
 
 func (mes *multiEchoServer) Count() int {
-	return len(mes.clients)
+    countChan := make(chan int)
+    mes.countRequestChan <- countChan
+	return <-countChan
 }
 
 func (mes *multiEchoServer) serverRoutine() {
@@ -73,6 +77,8 @@ func (mes *multiEchoServer) serverRoutine() {
 		case client := <-mes.removeClientChan:
 			client.closeChan <- true
 			delete(mes.clients, client.conn.RemoteAddr().String())
+        case countChan := <-mes.countRequestChan:
+            countChan <- len(mes.clients)
 		case <-mes.closeChan:
 			for _, client := range mes.clients {
 				client.closeChan <- true
